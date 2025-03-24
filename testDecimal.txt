@@ -1,0 +1,116 @@
+
+In the `calculateCompoundedInterest` function, the return value is (PRECISION) + (ratePerSecond * exp) + (secondTerm) + (thirdTerm) = ret1.
+ret2 = (PRECISION) + (ratePerSecond * exp) + (secondTerm) + (thirdTerm) * 2;
+ret1 < e ^ rt < ret2, 
+
+Let's compare the delta between using ret1 and ret2.
+
+```
+    uint256 constant PRECISION = 1e27;
+    uint256 internal constant SECONDS_PER_YEAR = 365 days;
+    function calculateCompoundedInterest(uint256 rate, uint256 exp) 
+        internal
+        pure
+        returns (uint256)
+    {
+        if (exp == 0) {
+            return PRECISION;
+        }
+
+        uint256 expMinusOne = exp - 1;
+
+        uint256 expMinusTwo = exp > 2 ? exp - 2 : 0;
+
+        uint256 ratePerSecond = rate / SECONDS_PER_YEAR;
+
+        uint256 basePowerTwo = ratePerSecond * ratePerSecond / PRECISION;
+
+        uint256 basePowerThree = basePowerTwo * ratePerSecond / PRECISION;
+
+        uint256 secondTerm = exp * expMinusOne * basePowerTwo / 2;
+        uint256 thirdTerm = exp * expMinusOne * expMinusTwo * basePowerThree / 6;
+
+        return (PRECISION) + (ratePerSecond * exp) + (secondTerm) + (thirdTerm);
+    }
+    function calculateCompoundedInterest_over(uint256 rate, uint256 exp) 
+        internal
+        pure
+        returns (uint256)
+    {
+        if (exp == 0) {
+            return PRECISION;
+        }
+
+        uint256 expMinusOne = exp - 1;
+
+        uint256 expMinusTwo = exp > 2 ? exp - 2 : 0;
+
+        uint256 ratePerSecond = rate / SECONDS_PER_YEAR;
+
+        uint256 basePowerTwo = ratePerSecond * ratePerSecond / PRECISION;
+
+        uint256 basePowerThree = basePowerTwo * ratePerSecond / PRECISION;
+
+        uint256 secondTerm = exp * expMinusOne * basePowerTwo / 2;
+        uint256 thirdTerm = exp * expMinusOne * expMinusTwo * basePowerThree / 6;
+
+        return (PRECISION) + (ratePerSecond * exp) + (secondTerm) + (thirdTerm) * 2;
+    }
+
+    function test_InterestAndDecimalPrecision() external {
+
+        uint256 totalTime = 365 * 20 days;
+        uint256 skipPeriod = 1 days;
+        uint256 borrowAmount = 100e18;
+
+        console.log("calculateCompoundedInterest           : %e", calculateCompoundedInterest(0.1e27, skipPeriod));
+        console.log("e^2.739726027397260273972602739726e-4 : 1.0002740101366609291175926524648");
+        console.log("calculateCompoundedInterest_over      : %e", calculateCompoundedInterest_over(0.1e27, skipPeriod));
+
+        vm.startPrank(leverager);
+        ILendingPool(lendingPool).borrow(address(weth), borrowAmount);
+
+        console.log("Before: weth totalLiquidity : %e", LendingPool(lendingPool).totalLiquidityOfReserve(address(weth)));
+        console.log("Before: weth totalBorrows   : %e", LendingPool(lendingPool).totalBorrowsOfReserve(address(weth)));
+        uint256 beforeTotalBorrows = LendingPool(lendingPool).totalBorrowsOfReserve(address(weth));
+
+        uint256 precisionLoss_due2E = 0;
+        (uint256 lastIndex,,uint256 lastBorrows,,,,,,,,)  = LendingPool(lendingPool).reserves(address(weth));
+        while (totalTime >= skipPeriod) {
+            uint256 beforeIndex = lastIndex;
+            uint256 beforeBorrows = lastBorrows;
+            uint256 borrowingRate = ILendingPool(lendingPool).borrowingRateOfReserve(address(weth));
+
+            uint256 skipTime = totalTime >= skipPeriod ? vm.randomUint(1, skipPeriod) : totalTime;
+            totalTime -= skipTime;
+            skip(skipTime);
+            ILendingPool(lendingPool).borrow(address(weth), 0);
+
+            lastIndex = beforeIndex * calculateCompoundedInterest(borrowingRate, skipTime) / (PRECISION);
+            uint256 lastIndexE = beforeIndex * calculateCompoundedInterest_over(borrowingRate, skipTime) / (PRECISION);
+            lastBorrows = LendingPool(lendingPool).totalBorrowsOfReserve(address(weth));
+            assertEq(lastBorrows, beforeBorrows * lastIndex / beforeIndex);
+            precisionLoss_due2E += beforeBorrows * lastIndexE / beforeIndex - lastBorrows;
+        }
+        console.log(" After: weth totalLiquidity : %e", LendingPool(lendingPool).totalLiquidityOfReserve(address(weth)));
+        console.log(" After: weth totalBorrows   : %e", LendingPool(lendingPool).totalBorrowsOfReserve(address(weth)));
+        console.log("             interests      : %d", LendingPool(lendingPool).totalBorrowsOfReserve(address(weth)) - beforeTotalBorrows);
+        console.log("        precisionLossdue2E  : %d", precisionLoss_due2E);
+    }
+```
+Result:
+```
+Ran 1 test for test/Leverager.t.sol:LeveragerTest
+[PASS] test_InterestAndDecimalPrecision() (gas: 369796874)
+Logs:
+  calculateCompoundedInterest           : 1.0002740101361311117417696e27
+  e^2.739726027397260273972602739726e-4 : 1.0002740101366609291175926524648
+  calculateCompoundedInterest_over      : 1.0002740101394633541797824e27
+  Before: weth totalLiquidity : 1e21
+  Before: weth totalBorrows   : 1e20
+   After: weth totalLiquidity : 1.093169034897048861381e21
+   After: weth totalBorrows   : 1.93169034897048861381e20
+               interests      : 93169034897048861381
+          precisionLossdue2E  : 43615119327
+```
+The percent of precision loss is less than 43615119327 / 93169034897048861381 = 4.6812891617042513041187630878858e-10
